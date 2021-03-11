@@ -7,20 +7,17 @@ PORT = int(sys.argv[1])
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server.bind((HOST, PORT))
 server.listen(10)
-print ("[*] Listening on %s:%d") % (HOST, PORT)
+print ("[*] Listening on %s:%d" % (HOST, PORT))
 
 ###create sqlite3###
 conn = sqlite3.connect('register.db')
 c = conn.cursor()
 
-c.execute("CREATE TABLE if not exists USER  S (UID INTEGER PRIMARY KEY AUTOINCREMENT, Username TEXT NOT NULL UNIQUE, Email TEXT NOT NULL, Password TEXT NOT NULL, Bucketname TEXT NOT NULL UNIQUE)")
+c.execute("CREATE TABLE if not exists USERS (UID INTEGER PRIMARY KEY AUTOINCREMENT, Username TEXT NOT NULL UNIQUE, Email TEXT NOT NULL, Password TEXT NOT NULL)")
 c.execute("CREATE TABLE if not exists BOARD ('Index' INTEGER PRIMARY KEY AUTOINCREMENT, Name TEXT NOT NULL UNIQUE, Moderator TEXT NOT NULL)")
 c.execute("CREATE TABLE if not exists POST (ID INTEGER PRIMARY KEY AUTOINCREMENT, Board TEXT NOT NULL, Title TEXT NOT NULL, Author TEXT NOT NULL, Date TEXT NOT NULL, Content TEXT NOT NULL, Comment TEXT)")
+c.execute("CREATE TABLE if not exists MAIL (Username TEXT, ID INTERGER, Subject TEXT NOT NULL, ComeFrom TEXT NOT NULL, Date TEXT NOT NULL)")
 conn.commit()
-
-###create amazon s3 resource###
-s3 = boto3.resource('s3')
-school_num = '0516066'
 
 def run_command(command, login, login_user):   
     output = ""
@@ -38,10 +35,8 @@ def run_command(command, login, login_user):
             c.execute("SELECT * FROM users WHERE username=?", [cmd[1]])
             
             if c.fetchone() is None:
-                output = "Register successfully.\n"
-                bk = school_num + '-' + cmd[1].lower() + '-' + str(random.randrange(100000, 999999, 1))
-                s3.create_bucket(Bucket=bk)
-                c.execute("INSERT INTO users (username, email, password, bucketname) values (?, ?, ?, ?)", (cmd[1], cmd[2], cmd[3], bk))
+                output = "Register successfully.\n" 
+                c.execute("INSERT INTO users (username, email, password) values (?, ?, ?)", (cmd[1], cmd[2], cmd[3]))
                 conn.commit()
         
             else:
@@ -60,17 +55,17 @@ def run_command(command, login, login_user):
                 else:
                     login = True
                     login_user = cmd[1]
-                    output = "Welcome, %s\n" % cmd[1]
+                    output = "Welcome, %s.\n" % cmd[1]
 
     elif cmd[0] == "whoami":
         if login:
-            output = "%s\n" % login_user
+            output = "%s.\n" % login_user
         else:
             output = "Please login first.\n"
 
     elif cmd[0] == "logout":
         if login:
-            output = "Bye, %s\n" % login_user
+            output = "Bye, %s.\n" % login_user
             login = False
         else:
             output = "Please login first.\n"
@@ -87,7 +82,7 @@ def run_command(command, login, login_user):
                     c.execute("INSERT INTO board (name, moderator) values (?, ?)", (cmd[1], login_user))
                     conn.commit()
                 else:
-                    output = "Board is already exist.\n"
+                    output = "Board already exist.\n"
 
             else:
                 output = "Please login first.\n"
@@ -108,7 +103,8 @@ def run_command(command, login, login_user):
                     output = "Create post successfully.\n"
                     c.execute("INSERT INTO post (board, title, author, date, content) values (?, ?, ?, ?, ?)", (cmd[1], title, login_user, date, content))
                     conn.commit()
-
+                    c.execute("SELECT MAX(ID) FROM POST")
+                    output += str(c.fetchone()[0]) + '\n'
             else:
                 output = "Please login first.\n"
 
@@ -152,32 +148,27 @@ def run_command(command, login, login_user):
             if c.fetchone() is None:
                 output = "Post is not exist.\n"
             else:
+                output = "Read successfully.\n"
                 c.execute("SELECT * FROM post WHERE id=?", [cmd[1]])
                 post = c.fetchone()
-                output = '{:<10}:'.format('Author') + post[3] + '\n'
-                output += '{:<10}:'.format('Title') + post[2] + '\n'
-                output += '{:<10}:'.format('Date') + post[4].replace("/","-") + '\n'
-                output += '--\n'
-                for row in post[5].split('<br>'):
-                    output += row + '\n'
-                output += "--\n"
-
-                if post[6] is not None:
-                    for row in post[6].split('<br>'):
-                        output += row + '\n'
+                output += post[3] + '\n'
+                output += post[2] + '\n'
+                
         else:
             output = "Usage: read <post-id>\n"
 
     elif cmd[0] == "delete-post":
         if len(cmd) == 2 and cmd[1].isdigit():
-            c.execute("SELECT author FROM post WHERE id=?", [cmd[1]])
-            post_owner = c.fetchone()
-            if post_owner is None:
+            c.execute("SELECT * FROM post WHERE id=?", [cmd[1]])
+            post = c.fetchone()
+            if post is None:
                 output = "Post is not exist.\n"
             elif login:
-                post_owner = post_owner[0]
+                post_owner = post[3]
                 if login_user == post_owner:
                     output = "Delete successfully.\n"
+                    output += post[3] + '\n'
+                    output += post[2] + '\n'
                     c.execute("DELETE FROM post WHERE id=?", [cmd[1]])
                     conn.commit()
                 else:
@@ -189,25 +180,30 @@ def run_command(command, login, login_user):
             output = "Usage: delete-post <post-id>\n"
     elif cmd[0] == "update-post":
         if cmd[1].isdigit() and (command.find("--title") != -1 or command.find("--content") != -1):
-            c.execute("SELECT Author FROM post WHERE id=?", [cmd[1]])
-            post_owner = c.fetchone()
-            
-            if post_owner is None:
+            c.execute("SELECT * FROM post WHERE id=?", [cmd[1]])
+            post = c.fetchone()
+            if post is None:
                 output = "Post is not exist.\n"
             elif login:
-                post_owner = post_owner[0]
+                post_owner = post[3]
                 if login_user == post_owner:
                     output = "Update successfully.\n"
+                    output += post[3] + '\n'
+                    output += post[2] + '\n'
                     t_idx = command.find('--title')
                     c_idx = command.find('--content')
                     if t_idx == -1:
                         c.execute("UPDATE post SET content=? WHERE id=?", (command[c_idx+10:],cmd[1]))
+                        output += "content=" + command[c_idx+10:]+'\n'
                     elif c_idx == -1:
                         c.execute("UPDATE post SET title=? WHERE id=?", (command[t_idx+8:],cmd[1]))
+                        output += "title=" + command[t_idx+8:]+'\n'
                     elif t_idx < c_idx:
                         c.execute("UPDATE post SET content=? WHERE id=?", (command[t_idx+8:c_idx], cmd[1]))
+                        output += "content=" + command[t_idx+8:c_idx]+'\n'
                     else:
                         c.execute("UPDATE post SET content=? WHERE id=?", (command[c_idx+10:t_idx], cmd[1]))
+                        output += "content=" + command[c_idx+10:t_idx]+'\n'
 
                     conn.commit()
                 else:
@@ -227,15 +223,18 @@ def run_command(command, login, login_user):
                 output = "Post is not exist\n"
             elif login:
                 output = "Comment successfully.\n"
-                c.execute("SELECT comment FROM post WHERE id=?", [cmd[1]])
-                comment = c.fetchone()
+                c.execute("SELECT * FROM post WHERE id=?", [cmd[1]])
+                post = c.fetchone()
+                comment = post[6]
                 if comment is None:
                     comment = login_user + ": " + ' '.join(cmd[2:]) + "<br>"
                 elif comment[0] is None:
                     comment = login_user + ": " + ' '.join(cmd[2:]) + "<br>"
                 else:
                     comment = comment[0] + login_user + ": " + ' '.join(cmd[2:]) + "<br>"
-                #print(comment)
+                output += post[3] + '\n'
+                output += post[2] + '\n'
+                output += comment[:-4] + '\n'
                 c.execute("UPDATE post SET comment=? WHERE id=?", (comment, cmd[1]))
                 conn.commit()
             else:
@@ -243,9 +242,83 @@ def run_command(command, login, login_user):
 
         else:
             output = "Usage: comment <post-id> <comment>\n"
+    ### HW3
+    elif cmd[0] == "mail-to":
+        if len(cmd) < 6 and command.find("--subject")!=-1 and command.find("--content")!=-1:
+            output = "Usage: mail-to <username> --subject <subject> --content <content>\n"
+        else:
+            if login:
+                username = cmd[1]
+                subject = ' '.join(cmd[3:cmd.index("--content")])
+                date = datetime.datetime.today().strftime("%m/%d")
+                c.execute("SELECT * FROM USERS WHERE Username=?", [username])
+                user_data = c.fetchone()
+                if user_data is None:
+                    output = username + " does not exist.\n"
+                else:
+                    c.execute("SELECT MAX(ID) From MAIL WHERE Username=?", [username])
+                    MID = c.fetchone()[0]
+                    if MID is None:
+                        MID = 1
+                    else:
+                        MID += 1
+                    c.execute("INSERT into MAIL(Username, ID, Subject, ComeFrom, Date) values (?, ?, ?, ?, ?)", (username, MID, subject, login_user, date))
+                    output = "Sent successfully.\n" + str(MID) + '\n'
+                    conn.commit()
+            else:
+                output = "Please login first.\n"
+
+    elif cmd[0] == "list-mail":
+        if len(cmd) != 1:
+            output = "Usage: list-mail\n"
+        else:    
+            if login:
+                output = 'ID\t'+'Subject\t'+'From\t'+'Date\n'
+                ID = 1
+                for row in c.execute("SELECT ID, Subject, ComeFrom, Date From MAIL where Username=?", [login_user]):
+                    output += str(ID)+'\t'+row[1]+'\t'+row[2]+'\t'+row[3]+'\n'
+                    ID += 1
+            else:
+                output = "Please login first.\n"
+    elif cmd[0] == "retr-mail":
+        if len(cmd) != 2 or not cmd[1].isdigit():
+            output = "Usage: retr-mail <mail#>\n"
+        else:
+            if login:
+                c.execute("SELECT Subject, ComeFrom, Date from MAIL where username=? AND ID=?", (login_user, int(cmd[1])))
+                data = c.fetchone()
+                if data is None:
+                    output = "No such mail.\n"
+                else:
+                    output = "Subject\t:" + data[0] + '\n'
+                    output += "From\t:" + data[1] + '\n'
+                    output += "Date\t:" + data[2] + '\n'
+                    output += '--\n'
+            else:
+                output = "Please login first.\n"
+
+    elif cmd[0] == "delete-mail":
+        if len(cmd) != 2 or not cmd[1].isdigit():
+            output = "Usage: delete-mail <mail#>\n"
+        else:
+            if login:
+                c.execute("SELECT Subject from MAIL where username=? AND ID=?", (login_user, int(cmd[1])))
+                data = c.fetchone()
+                if data is None:
+                    output = "No such mail.\n"
+                else:
+                    c.execute("DELETE FROM MAIL WHERE username=? AND ID=?", (login_user, int(cmd[1])))
+                    conn.commit()
+                    output = "Mail deleted.\n" + data[0] + '\n'
+                    
+                    
+            else:
+                output = "Please login first.\n"
+
     else:
         output = "% command not found\n"              
     
+
     '''
     for row in c.execute("SELECT * FROM users"):
         print(row)
@@ -256,24 +329,26 @@ def run_command(command, login, login_user):
 
 
 def handle_client(client_socket):
-    client_socket.send("********************************\n")
-    client_socket.send("** Welcome to the BBS server. **\n")
-    client_socket.send("********************************\n")
+    Welcome = "********************************\n" + \
+              "** Welcome to the BBS server. **\n" + \
+              "********************************\n"
+    client_socket.send(Welcome.encode())
     login = False
     login_user = ""
 
     while True:
-        client_socket.send("% ")
+        client_socket.send("% ".encode())
         cmd_buffer = ""
         while "\n" not in cmd_buffer:
-            cmd_buffer += client_socket.recv(1024)
+            cmd_buffer += client_socket.recv(1024).decode()
         cmd_buffer = cmd_buffer.rstrip()
+        print(cmd_buffer)
         if cmd_buffer == "exit":
             break
         elif len(cmd_buffer) is 0:
             continue
         response, login, login_user = run_command(cmd_buffer, login, login_user)
-        client_socket.send(response)
+        client_socket.send(response.encode())
 
     client_socket.close()
 
@@ -282,9 +357,10 @@ def handle_client(client_socket):
 while True:
     (client, addr) = server.accept()
     print("[*] New connection.")
-    print ("[*] Accepted connection from %s:%d") % (addr[0],addr[1])
+    print ("[*] Accepted connection from %s:%d" % (addr[0],addr[1]))
     
     client_handler = threading.Thread(target=handle_client, args=(client,))
     client_handler.start()
     
+
 
